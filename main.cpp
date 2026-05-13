@@ -193,6 +193,28 @@ public:
         //      For all other sites Pj (optionally, only k nearest neighbors) :
         //          Clip it with bisector of [Pi,Pj]
         //      (Lab 3, fluids) : also clip it by a disk of radius sqrt(w_i - w_air) centered at Pi
+
+        const size_t n = points.size();
+        cells.resize(n);
+
+        #pragma omp parallel for schedule(dynamic) // prof said to keep dynamic for this function
+        for (size_t i = 0; i < n; ++i) {
+            Polygon cell;
+            cell.vertices = {
+                Vector(0, 0),
+                Vector(1, 0),
+                Vector(1, 1),
+                Vector(0, 1)
+            };
+
+            for (size_t j = 0; j < n; ++j) {
+                if (j == i) continue;
+                cell = clip_by_bisector(cell, points[i], points[j], weights[i], weights[j]);
+                if (cell.vertices.empty()) break;
+            }
+
+            cells[i] = cell;
+        }
     }
 
 
@@ -215,6 +237,29 @@ public:
         // TODO Lab 2 (Semi-Discrete Optimal Transport) : extend to Laguerre cells, i.e., w0 != w1
 
         Polygon result;
+        const size_t n = V.vertices.size();
+        if (n == 0) return result;
+
+        const Vector N = Pi - P0;
+        const Vector M = (P0 + Pi) * 0.5;
+
+        for (size_t i = 0; i < n; ++i) {
+            const Vector& A = V.vertices[i];
+            const Vector& B = V.vertices[(i + 1) % n];
+            const bool A_inside = (A - P0).norm2() <= (A - Pi).norm2();
+            const bool B_inside = (B - P0).norm2() <= (B - Pi).norm2();
+            const double t = dot(M - A, N) / dot(B - A, N);
+            Vector P = A + (B - A) * t;
+
+            if (B_inside) {
+                if (!A_inside) {
+                    result.vertices.push_back(P);
+                }
+                result.vertices.push_back(B);
+            } else if (A_inside) {
+                result.vertices.push_back(P);
+            }
+        }
 
         return result;
     }
@@ -360,17 +405,21 @@ void save_svg(const std::vector<Polygon>& polygons, std::string filename, std::s
 
 
 int main() {
+    constexpr size_t N = 50;
+    VoronoiDiagram vor;
+    vor.points.resize(N);
+    vor.weights.resize(N, 0);
 
-    Polygon p;
-    p.vertices.push_back(Vector(0.1, 0.2));
-    p.vertices.push_back(Vector(0.6, 0.4));
-    p.vertices.push_back(Vector(0.5, 0.7));
-    p.vertices.push_back(Vector(0.2, 0.5));
+    // https://stackoverflow.com/questions/9878965/generate-a-value-between-0-0-and-1-0-using-rand
+    for (size_t i = 0; i < N; ++i) {
+        vor.points[i] = Vector(
+            (double)rand() / RAND_MAX,
+            (double)rand() / RAND_MAX
+        );
+    }
 
-    std::vector<Polygon> s;
-    s.push_back(p);
-
-    save_frame(s, "toto");
-    save_svg(s, "toto.svg");
+    vor.compute();
+    save_frame(vor.cells, "voronoi");
+    save_svg(vor.cells, "voronoi.svg");
     return 0;
 }
