@@ -61,7 +61,12 @@ public:
         if (vertices.size() < 3) return 0;
         // TODO Lab 2
         // Compute the area of the polygon
-        return -111;
+        double A = 0.0;
+        for (size_t i = 0; i < vertices.size(); ++i) {
+            size_t j = (i + 1) % vertices.size();
+            A += vertices[i][0] * vertices[j][1] - vertices[j][0] * vertices[i][1];
+        }
+        return A / 2.0;
     }
 
     Vector centroid() {
@@ -78,7 +83,22 @@ public:
         // TODO Lab 2
         // Compute the integral of ||x-Pi||^2 over the polygon
 
-        return -111;
+        double value = 0.0;
+
+        for (size_t k = 1; k + 1 < vertices.size(); ++k) {
+            const Vector& c1 = vertices[0];
+            const Vector& c2 = vertices[k];
+            const Vector& c3 = vertices[k + 1];
+            const Vector d1 = c1 - Pi;
+            const Vector d2 = c2 - Pi;
+            const Vector d3 = c3 - Pi;
+
+            const double sum = dot(d1, d1) + dot(d1, d2) + dot(d1, d3) + dot(d2, d2) + dot(d2, d3) + dot(d3, d3);
+            const double T = ((c2[0] - c1[0]) * (c3[1] - c1[1]) - (c2[1] - c1[1]) * (c3[0] - c1[0]));
+            value += abs(T) * sum;
+        }
+
+        return value / 12.0; // extract the constant 1/2 and 1/6 out of the sum
     }
 
     std::vector<Vector> vertices;
@@ -269,13 +289,13 @@ public:
         if (n == 0) return result;
 
         const Vector N = Pi - P0;
-        const Vector M = (P0 + Pi) * 0.5;
+        const Vector M = (P0 + Pi) * 0.5 + (w0 - wi) / (2.0 * (P0 - Pi).norm2()) * (Pi - P0);
 
         for (size_t i = 0; i < n; ++i) {
             const Vector& A = V.vertices[i];
             const Vector& B = V.vertices[(i + 1) % n];
-            const bool A_inside = (A - P0).norm2() <= (A - Pi).norm2();
-            const bool B_inside = (B - P0).norm2() <= (B - Pi).norm2();
+            const bool A_inside = (A - P0).norm2() - w0 <= (A - Pi).norm2() - wi;
+            const bool B_inside = (B - P0).norm2() - w0 <= (B - Pi).norm2() - wi;
             const double t = dot(M - A, N) / dot(B - A, N);
             Vector P = A + (B - A) * t;
 
@@ -334,8 +354,14 @@ static lbfgsfloatval_t evaluate(
     // Lab 3 (fluid) : adapt these functions to support partial optimal transport (now "n" has been increased by 1 to account for the air variable)
     
     lbfgsfloatval_t fx = 0.0;
-    // g[i] = ...
-    // fx = ...
+    const double lambda = 1.0 / n;
+
+    for (int i = 0; i < n; ++i) {
+        const double area = ot->vor.cells[i].area();
+        const double integral = ot->vor.cells[i].integral_square_distance(ot->vor.points[i]);
+        g[i] = area - lambda;
+        fx += -(integral - x[i] * area + lambda * x[i]);
+    }
 
     return fx;
 }
@@ -417,21 +443,26 @@ public:
 
 
 int main() {
-    constexpr size_t N = 50;
-    VoronoiDiagram vor;
-    vor.points.resize(N);
-    vor.weights.resize(N, 0);
+    constexpr size_t N = 500;
+    OptimalTransport ot;
+    ot.vor.points.resize(N);
+    ot.vor.weights.resize(N, 0);
 
     // https://stackoverflow.com/questions/9878965/generate-a-value-between-0-0-and-1-0-using-rand
     for (size_t i = 0; i < N; ++i) {
-        vor.points[i] = Vector(
+        ot.vor.points[i] = Vector(
             (double)rand() / RAND_MAX,
             (double)rand() / RAND_MAX
         );
     }
 
-    vor.compute();
-    save_frame(vor.cells, "voronoi");
-    save_svg(vor.cells, "voronoi.svg");
+    ot.vor.compute();
+    save_frame(ot.vor.cells, "voronoi");
+    save_svg(ot.vor.cells, "voronoi.svg", &ot.vor.points);
+
+    ot.optimize();
+    save_frame(ot.vor.cells, "ot_result");
+    save_svg(ot.vor.cells, "ot_result.svg", &ot.vor.points);
+
     return 0;
 }
