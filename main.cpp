@@ -66,7 +66,7 @@ public:
             size_t j = (i + 1) % vertices.size();
             A += vertices[i][0] * vertices[j][1] - vertices[j][0] * vertices[i][1];
         }
-        return A / 2.0;
+        return abs(A) / 2.0;
     }
 
     Vector centroid() {
