@@ -74,7 +74,22 @@ public:
         // TODO Lab 3
         // Compute the centroid of the polygon
 
-        return Vector(-111,-111);
+        double area = 0.0;
+        double Cx = 0.0;
+        double Cy = 0.0;
+
+        for (size_t i = 0; i < vertices.size(); ++i) {
+            const size_t j = (i + 1) % vertices.size();
+            const double cross = vertices[i][0] * vertices[j][1] - vertices[j][0] * vertices[i][1];
+            area += cross;
+            Cx += (vertices[i][0] + vertices[j][0]) * cross;
+            Cy += (vertices[i][1] + vertices[j][1]) * cross;
+        }
+
+        area *= 0.5;
+        Cx = Cx / (6 * area);
+        Cy = Cy / (6 * area);
+        return Vector(Cx, Cy);
     }
 
     double integral_square_distance(const Vector& Pi) {
@@ -261,6 +276,27 @@ public:
                 if (cell.vertices.empty()) break;
             }
 
+            if (!cell.vertices.empty() && weights.size() > points.size()) {
+                const double r2 = weights[i] - weights[points.size()];
+
+                if (r2 > 0) {
+                    const double r = sqrt(r2);
+                    constexpr int K = 64;
+                    double a = 0.0;
+                    Vector u(points[i][0] + r, points[i][1]);
+
+                    for (int k = 0; k < K; ++k) {
+                        a += 2.0 * M_PI / K;
+                        Vector v(points[i][0] + r * cos(a), points[i][1] + r * sin(a));
+                        cell = clip_by_edge(cell, u, v);
+                        if (cell.vertices.empty()) break;
+                        u = v; // avoid computing two vectors in the loop and shift instead
+                    }
+                } else {
+                    cell.vertices.clear();
+                }
+            }
+
             cells[i] = cell;
         }
     }
@@ -273,6 +309,31 @@ public:
         // Will be used to clip a polygon (a cell) by all the edges of a (discretized) disk
 
         Polygon result;
+        const size_t n = V.vertices.size();
+        if (n == 0) return result;
+
+        const Vector edge = v - u;
+
+        for (size_t i = 0; i < n; ++i) {
+            const Vector& A = V.vertices[i];
+            const Vector& B = V.vertices[(i + 1) % n];
+
+            const double crossA = edge[0] * (A[1] - u[1]) - edge[1] * (A[0] - u[0]);
+            const double crossB = edge[0] * (B[1] - u[1]) - edge[1] * (B[0] - u[0]);
+
+            if (crossA >= 0) {
+                if (crossB >= 0) {
+                    result.vertices.push_back(B);
+                } else {
+                    const double t = crossA / (crossA - crossB);
+                    result.vertices.push_back(A + (B - A) * t);
+                }
+            } else if (crossB >= 0) {
+                const double t = crossA / (crossA - crossB);
+                result.vertices.push_back(A + (B - A) * t);
+                result.vertices.push_back(B);
+            }
+        }
 
         return result;
     }
@@ -331,6 +392,7 @@ public:
     void optimize();
 
     VoronoiDiagram vor;
+    double fluid_volume = 1.0;
 };
 
 
@@ -354,13 +416,22 @@ static lbfgsfloatval_t evaluate(
     // Lab 3 (fluid) : adapt these functions to support partial optimal transport (now "n" has been increased by 1 to account for the air variable)
     
     lbfgsfloatval_t fx = 0.0;
-    const double lambda = 1.0 / n;
+    const size_t N_fluid = ot->vor.points.size();
+    const bool partial = n > N_fluid;
+    const double lambda = partial ? (ot->fluid_volume / static_cast<double>(N_fluid)) : (1.0 / n);
+    double total_area = 0.0;
 
-    for (int i = 0; i < n; ++i) {
+    for (size_t i = 0; i < N_fluid; ++i) {
         const double area = ot->vor.cells[i].area();
         const double integral = ot->vor.cells[i].integral_square_distance(ot->vor.points[i]);
         g[i] = area - lambda;
         fx += -(integral - x[i] * area + lambda * x[i]);
+        total_area += area;
+    }
+
+    if (partial) {
+        g[N_fluid] = ot->fluid_volume - total_area;
+        fx += -x[N_fluid] * (total_area - ot->fluid_volume);
     }
 
     return fx;
@@ -404,6 +475,23 @@ void OptimalTransport::optimize() {
 class Fluid {
 public:
     Fluid(int N_particles = 1000) : N_particles(N_particles) {
+        fluid_volume = 0.25;
+        particles.resize(N_particles);
+        velocities.resize(N_particles, Vector(0, 0));
+
+        for (size_t i = 0; i < N_particles; ++i) {
+            // https://stackoverflow.com/questions/9878965/generate-a-value-between-0-0-and-1-0-using-rand
+            particles[i] = Vector(
+                (double)rand() / RAND_MAX * 0.5 + 0.25,
+                (double)rand() / RAND_MAX * 0.5 + 0.25
+            );
+        }
+
+        ot.vor.weights.clear();
+        for (size_t i = 0; i < N_particles; ++i) {
+            ot.vor.weights.push_back(fluid_volume / (N_particles * M_PI));
+        }
+        ot.vor.weights.push_back(0.0);
     }
 
     // Lab 3 : advance the simulation dt in time
@@ -416,6 +504,34 @@ public:
         // TODO Lab 3 : 
         // Compute semi-discrete partial optimal transport
         // for all particles, add gravity and spring force towards cell centroid, integrate acceleration->velocity and velocity->position
+
+        ot.vor.points = particles;
+        ot.fluid_volume = fluid_volume;
+        ot.optimize();
+
+        for (size_t i = 0; i < N_particles; ++i) {
+            Vector F = m_i * g;
+
+            if (ot.vor.cells[i].vertices.size() >= 3) {
+                Vector c = ot.vor.cells[i].centroid();
+                Vector F_spring = (1.0 / epsilon2) * (c - particles[i]);
+                F = F_spring + m_i * g;
+            }
+
+            velocities[i] = velocities[i] + (dt / m_i) * F;
+            particles[i] = particles[i] + dt * velocities[i];
+
+            for (int d = 0; d < 2; ++d) {
+                if (particles[i][d] < 0) {
+                    particles[i][d] *= -1;
+                    velocities[i][d] *= -1;
+                }
+                if (particles[i][d] > 1) {
+                    particles[i][d] = 2.0 - particles[i][d];
+                    velocities[i][d] *= -1;
+                }
+            }
+        }
     }
 
     // just run the full simulation
@@ -443,26 +559,7 @@ public:
 
 
 int main() {
-    constexpr size_t N = 500;
-    OptimalTransport ot;
-    ot.vor.points.resize(N);
-    ot.vor.weights.resize(N, 0);
-
-    // https://stackoverflow.com/questions/9878965/generate-a-value-between-0-0-and-1-0-using-rand
-    for (size_t i = 0; i < N; ++i) {
-        ot.vor.points[i] = Vector(
-            (double)rand() / RAND_MAX,
-            (double)rand() / RAND_MAX
-        );
-    }
-
-    ot.vor.compute();
-    save_frame(ot.vor.cells, "voronoi");
-    save_svg(ot.vor.cells, "voronoi.svg", &ot.vor.points);
-
-    ot.optimize();
-    save_frame(ot.vor.cells, "ot_result");
-    save_svg(ot.vor.cells, "ot_result.svg", &ot.vor.points);
-
+    Fluid fluid(500);
+    fluid.run_simulation();
     return 0;
 }
